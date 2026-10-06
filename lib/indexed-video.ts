@@ -11,13 +11,13 @@ export type IndexedVideo = {
 
 export async function getIndexedVideo(videoId: string): Promise<IndexedVideo | null> {
   const db = sql();
-  const rows = await db`
+  const rows = (await db`
     SELECT video_id, chunk_count, index_version, indexed_at
     FROM indexed_videos
     WHERE video_id = ${videoId}
     LIMIT 1
-  `;
-  return (rows[0] as IndexedVideo | undefined) ?? null;
+  `) as IndexedVideo[];
+  return rows[0] ?? null;
 }
 
 export async function isVideoIndexed(videoId: string): Promise<boolean> {

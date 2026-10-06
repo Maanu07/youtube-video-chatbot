@@ -13,12 +13,18 @@ export function getChunkOverlap() {
 }
 
 export function createDoc(items: TranscriptItem[], videoId: string): Document {
+  const first = items[0];
+  const last = items.at(-1);
+  if (!first || !last) {
+    throw new Error("Cannot create document from empty transcript window.");
+  }
+
   return new Document({
     pageContent: items.map((i) => i.text).join(" "),
     metadata: {
       videoId,
-      startTime: items[0].start,
-      endTime: items.at(-1).start + items.at(-1).duration,
+      startTime: first.start,
+      endTime: last.start + last.duration,
     },
   });
 }
