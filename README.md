@@ -12,7 +12,7 @@ Built with **Next.js**, **TypeScript**, **LangChain**, **Gemini**, **Pinecone**,
 ## Features
 
 - YouTube URL / video ID input (watch, youtu.be, shorts, embed)
-- Transcript fetching via [`youtube-transcript`](https://www.npmjs.com/package/youtube-transcript)
+- Dual transcript providers — [`youtube-transcript`](https://www.npmjs.com/package/youtube-transcript) locally, [Supadata](https://supadata.ai) on Vercel
 - Custom transcript chunking with segment overlap (~1000 chars / 150 overlap)
 - Gemini embeddings stored in Pinecone (one namespace per video)
 - Neon Postgres ingestion cache — skip re-indexing for already-processed videos
@@ -35,7 +35,8 @@ Built with **Next.js**, **TypeScript**, **LangChain**, **Gemini**, **Pinecone**,
 | Database | Neon Postgres (indexed video registry) |
 | Rate limiting | Upstash Redis (`@upstash/ratelimit`) |
 | Client storage | `localStorage` (chat history per video) |
-| Transcripts | `youtube-transcript` |
+| Transcripts (local) | `youtube-transcript` |
+| Transcripts (production) | [Supadata API](https://supadata.ai) |
 | Testing | Vitest |
 
 ## Prerequisites
@@ -45,6 +46,7 @@ Built with **Next.js**, **TypeScript**, **LangChain**, **Gemini**, **Pinecone**,
 - [Pinecone](https://www.pinecone.io/) account with a serverless index
 - [Neon](https://neon.tech/) Postgres database
 - [Upstash](https://upstash.com/) Redis database (for rate limiting)
+- [Supadata](https://supadata.ai) API key (production / Vercel only — local dev uses `youtube-transcript` by default)
 
 ### Pinecone index setup
 
@@ -77,6 +79,12 @@ cp .env.example .env.local
 | `DATABASE_URL` | Neon Postgres connection string |
 | `UPSTASH_REDIS_REST_URL` | Upstash Redis REST URL |
 | `UPSTASH_REDIS_REST_TOKEN` | Upstash Redis REST token |
+| `SUPADATA_API_KEY` | Supadata API key — **required on Vercel**; optional locally |
+| `TRANSCRIPT_PROVIDER` | Optional override: `youtube-transcript` or `supadata` |
+
+**Local dev:** leave `SUPADATA_API_KEY` empty and the app uses `youtube-transcript` automatically.
+
+**Production (Vercel):** set `SUPADATA_API_KEY`. YouTube blocks cloud/datacenter IPs, so direct scraping fails on serverless hosts — Supadata fetches captions reliably from production.
 
 4. Create the database table in Neon (SQL Editor):
 
@@ -130,7 +138,7 @@ npm run test:run  # single run (CI)
 |---|---|
 | `lib/youtube.test.ts` | Video ID extraction from URLs |
 | `lib/chunking.test.ts` | Transcript chunking and overlap |
-| `lib/transcript.test.ts` | ms → seconds conversion (mocked provider) |
+| `lib/transcript.test.ts` | Supadata path: ms → seconds conversion (mocked `fetch`) |
 | `lib/indexed-video.test.ts` | Ingestion cache version checks (mocked Neon) |
 
 External services (Gemini, Pinecone, Neon, Upstash) are not hit during unit tests — they are mocked at module boundaries.
@@ -147,7 +155,7 @@ components/
   ChatApp.tsx          # Main UI + chat history
 lib/
   youtube.ts           # Video ID extraction
-  transcript.ts        # YouTube transcript fetching
+  transcript.ts        # Transcript fetching (youtube-transcript / Supadata)
   chunking.ts          # Transcript chunking with overlap
   rag.ts               # Embeddings, Pinecone, retrieval, generation
   indexed-video.ts     # Neon ingestion registry
@@ -227,15 +235,24 @@ IP is read from `x-forwarded-for` (set by Vercel in production) or `x-real-ip`. 
 
 ## Deployment
 
-Works well on [Vercel](https://vercel.com). Add all env vars from `.env.example` in your project settings.
+Works well on [Vercel](https://vercel.com). Add all env vars from `.env.example` in your project settings — including `SUPADATA_API_KEY` for transcript fetching in production.
 
 Keep API keys server-side only — they are used exclusively in Route Handlers under `app/api/`.
+
+### Transcript providers
+
+| Environment | Default provider | Why |
+|---|---|---|
+| Local (`npm run dev`) | `youtube-transcript` | Free, no API usage |
+| Vercel (production) | Supadata | YouTube often blocks cloud IPs; Supadata works from serverless |
+
+Override anytime with `TRANSCRIPT_PROVIDER=supadata` or `TRANSCRIPT_PROVIDER=youtube-transcript` in `.env.local`.
 
 ### Deploy checklist
 
 1. Push repo to GitHub
 2. Import project on Vercel
-3. Add all 6 environment variables
+3. Add all 7 environment variables (including `SUPADATA_API_KEY`)
 4. Confirm Neon `indexed_videos` table exists
 5. Confirm Pinecone index uses **600 dimensions**
 6. Deploy and smoke-test: process video → ask question → refresh page (history should persist)
@@ -253,7 +270,9 @@ After deploying, update the **Live demo** URL at the top of this README.
 - Rate limiting is enabled for public deployment; adjust limits in `lib/rate-limit.ts` as needed.
 - Add authentication before scaling to many users (IP limits are a baseline, not full access control).
 - Bump `INDEX_VERSION` in `lib/indexed-video.ts` when changing embedding model or chunk settings to trigger re-indexing.
-- YouTube transcript fetching uses an unofficial API and only works for videos with captions enabled.
+- **Local dev** uses `youtube-transcript` (unofficial YouTube API; captions must be enabled on the video).
+- **Production** uses Supadata — set `SUPADATA_API_KEY` on Vercel. Without it, transcript fetching fails in production.
+- Supadata free tier has monthly request limits; cached videos (Neon) skip re-fetching.
 - Chat history is stored in the user's browser only — not suitable for cross-device sync without server-side storage.
 - Consider prompt-injection defenses and retrieval evaluation for production use.
 

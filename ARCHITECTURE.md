@@ -9,7 +9,7 @@ This document describes how the YouTube Video Chatbot is structured, how data fl
 │   Browser   │ ─────────────────────────► │  Extract videoId                     │
 │  (ChatApp)  │                            │  Check Neon cache → return if hit    │
 └─────────────┘                            │  Rate limit (Upstash, per IP)        │
-      │                                    │  Fetch transcript (youtube-transcript)│
+      │                                    │  Fetch transcript (provider switch)  │
       │                                    │  Chunk + embed → Pinecone (namespace)│
       │                                    │  Record in Neon                      │
       │                                    └──────────────────────────────────────┘
@@ -114,9 +114,23 @@ On limit exceeded, routes return **429** with `X-RateLimit-Limit`, `X-RateLimit-
 
 ### Transcript — `lib/transcript.ts`
 
-Thin wrapper around the `youtube-transcript` package. Converts the package's millisecond `offset`/`duration` values to seconds for metadata and UI timestamps.
+Dual-provider transcript fetching, isolated behind `fetchTranscript(videoId)` so the RAG pipeline stays unchanged.
 
-Transcript fetching is isolated here so the provider can be swapped without touching the RAG pipeline.
+**Provider selection** (`getProvider()`):
+
+1. If `TRANSCRIPT_PROVIDER` is set to `supadata` or `youtube-transcript`, use that.
+2. Otherwise: **production** → Supadata; **local dev** → `youtube-transcript`.
+
+| Provider | Used when | Implementation |
+|---|---|---|
+| `youtube-transcript` | Local dev (default) | Dynamic import; scrapes YouTube captions directly |
+| Supadata | Vercel / production (default) | `GET https://api.supadata.ai/v1/transcript` with `x-api-key` |
+
+Both providers return the same shape: `{ text, start, duration }` with times in **seconds** (converted from ms `offset`/`duration`).
+
+**Why two providers?** YouTube often blocks requests from cloud/datacenter IPs (e.g. Vercel). Local residential IPs work with `youtube-transcript`; production needs Supadata as a reliable proxy.
+
+**Supadata request params:** `url`, `lang=en`, `text=false` (timestamped segments), `mode=auto`.
 
 ### Video ID — `lib/youtube.ts`
 
@@ -224,7 +238,7 @@ Unit tests use **Vitest** with the `node` environment. Config: `vitest.config.ts
 |---|---|---|
 | `lib/youtube.ts` | `youtube.test.ts` | Pure function tests, no mocks |
 | `lib/chunking.ts` | `chunking.test.ts` | Pure function tests, no mocks |
-| `lib/transcript.ts` | `transcript.test.ts` | Mock `youtube-transcript` package |
+| `lib/transcript.ts` | `transcript.test.ts` | Mock Supadata `fetch` (ms → seconds) |
 | `lib/indexed-video.ts` | `indexed-video.test.ts` | Mock Neon `sql` client |
 
 External APIs (Gemini, Pinecone, Upstash, Neon) are not called in unit tests. Route handlers and RAG integration are candidates for future integration tests.
@@ -248,6 +262,7 @@ npm run test:run  # CI single run
 | Segment-level overlap | Preserves meaningful boundaries and correct `startTime`/`endTime` |
 | `INDEX_VERSION` | Allows safe re-indexing when embedding model or chunk config changes |
 | SSE over WebSockets | Simpler for unidirectional server→client streaming in Next.js Route Handlers |
+| Dual transcript providers | Local: free `youtube-transcript`; prod: Supadata for Vercel compatibility |
 | Transcript provider boundary | `lib/transcript.ts` is swappable without touching RAG logic |
 | Chunking in separate module | Pure logic testable without loading Pinecone/Gemini dependencies |
 
@@ -256,7 +271,7 @@ npm run test:run  # CI single run
 ```
 lib/
   youtube.ts           → extractVideoId()
-  transcript.ts        → fetchTranscript() — youtube-transcript wrapper
+  transcript.ts        → fetchTranscript() — youtube-transcript / Supadata switch
   chunking.ts          → accumulateTranscriptItems() — segment merge + overlap
   rag.ts               → embeddings, Pinecone, retrieval, generation
   indexed-video.ts     → isVideoIndexed(), markVideoIndexed(), getIndexedVideo()
